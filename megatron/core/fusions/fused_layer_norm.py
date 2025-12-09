@@ -21,6 +21,7 @@ except ImportError:
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNormAffineFunction
+    from apex.normalization.fused_layer_norm import FusedRMSNormAffineFunction
 
     HAVE_FUSED_LAYER_NORM = True
 except ImportError:
@@ -167,3 +168,52 @@ class FusedLayerNorm(torch.nn.Module):
                 )
 
         return output
+
+class FusedRMSNorm(torch.nn.Module):
+    """RMS Norm, fused into a single CUDA kernel.
+
+    Args:
+      hidden_size (int): Transformer hidden dimension.
+
+      eps (float): Epsilon added to denominator, for numerical stability.
+
+      config (TransformerConfig): Transformer config. Include to match custom
+      layer norm interfaces.
+    """
+    def __init__(
+        self,
+        config: TransformerConfig,
+        hidden_size: int,
+        eps: float = 1e-6,
+        # included to match TE interface
+        persist_layer_norm: bool = True,
+        zero_centered_gamma: bool = False,
+        normalization: str = "RMSNorm",
+    ):
+        super().__init__()
+
+        self.config = config
+
+        assert (
+            self.config.normalization == "RMSNorm"
+        ), f'({self.config.normalization}) is not supported in FusedRMSNorm'
+
+        assert HAVE_FUSED_LAYER_NORM, f'Apex must be installed to use FusedRMSNorm.'
+        if isinstance(hidden_size, numbers.Integral):
+            hidden_size = (hidden_size,)
+        self.hidden_size = torch.Size(hidden_size)
+        self.eps = eps
+        # Parameters need to be initialized with torch.empty rather than torch.Tensor for correct device placement with nemo2.
+        self.weight = Parameter(torch.empty(*hidden_size))
+        self.reset_parameters()
+        self.sequence_parallel = self.config.sequence_parallel
+        # set sequence parallelism flag on weight parameter
+        setattr(self.weight, 'sequence_parallel', self.sequence_parallel)
+
+    def reset_parameters(self):
+        init.ones_(self.weight)
+
+    def forward(self, input: Tensor) -> Tensor:
+        return FusedRMSNormAffineFunction.apply(
+            input, self.weight, self.hidden_size, self.eps
+        )

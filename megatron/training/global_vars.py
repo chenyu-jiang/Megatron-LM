@@ -91,6 +91,8 @@ def set_global_variables(args, build_tokenizer=True):
     )
     if build_tokenizer:
         _ = _build_tokenizer(args)
+    else:
+        args.padded_vocab_size = args.vocab_size
     _set_tensorboard_writer(args)
     _set_wandb_writer(args)
     _set_one_logger(args)

@@ -83,7 +83,7 @@ def initialize_megatron(
 
     # set global args, build tokenizer, and set adlr-autoresume,
     # tensorboard-writer, and timers.
-    set_global_variables(args)
+    set_global_variables(args, args.build_tokenizer)
 
     # set logging level
     setup_logging()

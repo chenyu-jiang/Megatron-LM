@@ -227,7 +227,7 @@ def apply_rotary_pos_emb(
 
 
 def apply_rotary_pos_emb_with_cos_sin(
-    t: Tensor, cos: Tensor, sin: Tensor, rotary_interleaved: bool = False
+    t: Tensor, cos: Tensor, sin: Tensor, rotary_interleaved: bool = False, cu_seqlens: Optional[Tensor] = None, max_seqlen: Optional[int] = None,
 ) -> Tensor:
     """
     This function applies rotary positional embedding to the target tensor t
@@ -245,17 +245,31 @@ def apply_rotary_pos_emb_with_cos_sin(
             freqs = freqs.unsqueeze(1)
         freqs = freqs.expand(t.shape[:-1] + (-1,))
 
-        y = _apply_rotary_pos_emb_bshd(
-            t,
-            freqs,
-            rotary_interleaved=rotary_interleaved,
-            multi_latent_attention=False,
-            mscale=1.0,
-        )
+        if cu_seqlens is None:
+            y = _apply_rotary_pos_emb_bshd(
+                t,
+                freqs,
+                rotary_interleaved=rotary_interleaved,
+                multi_latent_attention=False,
+                mscale=1.0,
+            )
+        else:
+            y = _apply_rotary_pos_emb_thd(
+                t,
+                cu_seqlens,
+                freqs,
+                rotary_interleaved=rotary_interleaved,
+                multi_latent_attention=False,
+                mscale=1.0,
+            )
     else:
-        # Use Flash Attention's optimized kernel for rotary embedding
-        t = t.permute(1, 0, 2, 3)
-        y = apply_rotary_emb_flash(t, cos, sin, rotary_interleaved)
-        y = y.permute(1, 0, 2, 3)
+        if cu_seqlens is None:
+            # Use Flash Attention's optimized kernel for rotary embedding
+            t = t.permute(1, 0, 2, 3)
+            y = apply_rotary_emb_flash(t, cos, sin, rotary_interleaved)
+            y = y.permute(1, 0, 2, 3)
+        else:
+            assert max_seqlen is not None, "max_seqlen must be provided when cu_seqlens is given."
+            y = apply_rotary_emb_flash(t, cos, sin, rotary_interleaved, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
 
     return y

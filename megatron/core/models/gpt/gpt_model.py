@@ -10,7 +10,7 @@ from megatron.core import InferenceParams, tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
-from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
+from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding, Qwen3VLTextRotaryEmbedding
 from megatron.core.models.common.language_module.language_module import LanguageModule
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.enums import ModelType
@@ -124,6 +124,16 @@ class GPTModel(LanguageModule):
                 rope_scaling=rope_scaling,
                 rope_scaling_factor=rope_scaling_factor,
                 use_cpu_initialization=self.config.use_cpu_initialization,
+            )
+        elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
+            self.rotary_pos_emb = Qwen3VLTextRotaryEmbedding(
+                hidden_size=self.config.hidden_size,
+                kv_channels=self.config.kv_channels,
+                num_attention_heads=self.config.num_attention_heads,
+                rope_theta=rotary_base,
+                rotary_percent=rotary_percent,
+                device=torch.device("cuda", torch.cuda.current_device()),
+                max_position_embeddings=self.max_position_embeddings,
             )
 
         # Cache for RoPE tensors which do not change between iterations.
@@ -247,6 +257,13 @@ class GPTModel(LanguageModule):
                     packed_seq=packed_seq_params is not None
                     and packed_seq_params.qkv_format == 'thd',
                 )
+        elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
+            assert position_ids is not None, "position_ids cannot be None for mrope"
+            rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb(
+                decoder_input, position_ids
+            )
+            rotary_pos_cos = rotary_pos_cos.squeeze()
+            rotary_pos_sin = rotary_pos_sin.squeeze()
         if (
             (self.config.enable_cuda_graph or self.config.flash_decode)
             and rotary_pos_cos is not None

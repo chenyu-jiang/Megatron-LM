@@ -82,6 +82,7 @@ class Attention(MegatronModule, ABC):
         attn_mask_type: AttnMaskType,
         attention_type: str,
         cp_comm_type: str = None,
+        is_qwen3_vl_attn: bool = False,
     ):
         super().__init__(config=config)
 
@@ -89,6 +90,7 @@ class Attention(MegatronModule, ABC):
         self.layer_number = layer_number
         self.attn_mask_type = attn_mask_type
         self.attention_type = attention_type
+        self.is_qwen3_vl_attn = is_qwen3_vl_attn
 
         # For normal attention without groups, num_query_groups == num_attention_heads,
         # so these two will be the same
@@ -355,8 +357,9 @@ class Attention(MegatronModule, ABC):
         """
 
         # hidden_states: [sq, b, h]
-        if self.config.flash_decode:
+        if self.config.flash_decode or self.is_qwen3_vl_attn:
             rotary_pos_emb = None
+            assert rotary_pos_cos is not None and rotary_pos_sin is not None
         else:
             assert rotary_pos_cos is None and rotary_pos_sin is None
 
@@ -421,7 +424,7 @@ class Attention(MegatronModule, ABC):
         # ================================================
         # relative positional embedding (rotary embedding)
         # ================================================
-        if rotary_pos_emb is not None and not self.config.flash_decode:
+        if rotary_pos_emb is not None and not (self.config.flash_decode or self.is_qwen3_vl_attn):
             q_pos_emb, k_pos_emb = rotary_pos_emb
 
             if packed_seq_params is not None:
@@ -444,6 +447,14 @@ class Attention(MegatronModule, ABC):
             # absolute positional embedding.
             # otherwise, only relative positional embedding takes effect
             # value_layer = apply_rotary_pos_emb(value_layer, k_pos_emb)
+
+        if self.is_qwen3_vl_attn:
+            query = apply_rotary_pos_emb_with_cos_sin(query, cos=rotary_pos_cos, sin=rotary_pos_sin,
+                                                     cu_seqlens=packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None,
+                                                     max_seqlen=packed_seq_params.max_seqlen_q if packed_seq_params is not None else None)
+            key = apply_rotary_pos_emb_with_cos_sin(key, cos=rotary_pos_cos, sin=rotary_pos_sin,
+                                                    cu_seqlens=packed_seq_params.cu_seqlens_kv if packed_seq_params is not None else None,
+                                                    max_seqlen=packed_seq_params.max_seqlen_kv if packed_seq_params is not None else None)
 
         # ==================================
         # core attention computation
@@ -500,6 +511,7 @@ class SelfAttention(Attention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         cp_comm_type: str = None,
+        is_qwen3_vl_attn: bool = False,
     ):
         super().__init__(
             config=config,
@@ -508,6 +520,7 @@ class SelfAttention(Attention):
             attn_mask_type=attn_mask_type,
             attention_type="self",
             cp_comm_type=cp_comm_type,
+            is_qwen3_vl_attn=is_qwen3_vl_attn,
         )
 
         self.linear_qkv = build_module(

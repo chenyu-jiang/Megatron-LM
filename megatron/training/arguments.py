@@ -1579,6 +1579,9 @@ def _add_training_args(parser):
                        choices=['nccl', 'ucc'],
                        help='Select a communicator backend for pipeline parallel communication. '
                        'If None, the default backend will be used.')
+    group.add_argument('--no-build-tokenizer', action='store_false',
+                       help='If set, do not build the tokenizer at initialization.',
+                       dest='build_tokenizer')
 
     return parser
 

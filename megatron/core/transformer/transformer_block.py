@@ -432,6 +432,15 @@ class TransformerBlock(MegatronModule):
             raise RuntimeError("CUDAGraph requires TransformerEngine, but not installed")
         return optional_inputs
 
+    def _deepstack_process(
+        self, hidden_states: torch.Tensor, visual_pos_masks: torch.Tensor, visual_embeds: torch.Tensor
+    ):
+        visual_pos_masks = visual_pos_masks.to(hidden_states.device)
+        visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
+        local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds
+        hidden_states[visual_pos_masks, :] = local_this
+        return hidden_states
+
     def forward(
         self,
         hidden_states: Tensor,
@@ -445,6 +454,9 @@ class TransformerBlock(MegatronModule):
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
         sequence_len_offset: Tensor = None,
+        return_intermediate_hidden_at_layers: List[int] = None,
+        visual_pos_masks: Optional[Tensor] = None,
+        deepstack_visual_embeds: List[Tensor] = None,
     ):
         """
         Perform the forward pass through the transformer block.
@@ -529,9 +541,13 @@ class TransformerBlock(MegatronModule):
         else:
             fp8_context = nullcontext()
 
+        intermediate_hidden = []
         with rng_context, fp8_context:
             # Forward pass.
             if self.config.recompute_granularity == 'full' and self.training:
+                assert return_intermediate_hidden_at_layers is None, \
+                    "Returning intermediate hidden states is not supported with full " \
+                    "activation checkpointing."
                 hidden_states = self._checkpointed_forward(
                     hidden_states=hidden_states,
                     attention_mask=attention_mask,
@@ -589,6 +605,19 @@ class TransformerBlock(MegatronModule):
                         and self.group_prefetch_offload_commit_async is not None
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
+                    if return_intermediate_hidden_at_layers is not None:
+                        if l_no in return_intermediate_hidden_at_layers:
+                            intermediate_hidden.append(hidden_states)
+
+                    if deepstack_visual_embeds is not None:
+                        assert visual_pos_masks is not None, \
+                            "visual_pos_masks must be provided if deepstack_visual_embeds is provided"
+                        if l_no < len(deepstack_visual_embeds):
+                            hidden_states = self._deepstack_process(
+                                hidden_states,
+                                visual_pos_masks,
+                                deepstack_visual_embeds[l_no],
+                            )
 
         # Final layer norm.
         if self.final_layernorm is not None:
@@ -600,6 +629,8 @@ class TransformerBlock(MegatronModule):
                 inp=hidden_states, requires_grad=True, keep_graph=True
             )
 
+        if return_intermediate_hidden_at_layers is not None:
+            return hidden_states, intermediate_hidden
         return hidden_states
 
     def sharded_state_dict(

@@ -51,6 +51,7 @@ TEXT_MODEL_ARGS=(
     --group-query-attention
     --no-masked-softmax-fusion
     --attention-softmax-in-fp32
+    --qk-layernorm
 )
 
 # MoE configuration from text_config

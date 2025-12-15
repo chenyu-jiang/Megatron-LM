@@ -1,0 +1,265 @@
+{
+  "_description": "Mapping HuggingFace Qwen3-VL to Megatron-LM with layer/expert placeholders",
+  "_note": "Transforms: concat_qkv, split_expert_axis0 with {layer}/{expert} expansion",
+  "mappings": [
+    {
+      "hf_name": "model.visual.patch_embed.proj.weight",
+      "megatron_name": "vision_model.patch_embed.proj.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.patch_embed.proj.bias",
+      "megatron_name": "vision_model.patch_embed.proj.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.pos_embed.weight",
+      "megatron_name": "vision_model.pos_embed.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.norm.weight",
+      "megatron_name": "vision_model.merger.norm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.norm.bias",
+      "megatron_name": "vision_model.merger.norm.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.linear_fc1.weight",
+      "megatron_name": "vision_model.merger.linear_fc1.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.linear_fc1.bias",
+      "megatron_name": "vision_model.merger.linear_fc1.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.linear_fc2.weight",
+      "megatron_name": "vision_model.merger.linear_fc2.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.merger.linear_fc2.bias",
+      "megatron_name": "vision_model.merger.linear_fc2.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.norm.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.0.norm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.norm.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.0.norm.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.linear_fc1.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.0.linear_fc1.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.linear_fc1.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.0.linear_fc1.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.linear_fc2.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.0.linear_fc2.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.0.linear_fc2.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.0.linear_fc2.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.norm.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.1.norm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.norm.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.1.norm.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.linear_fc1.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.1.linear_fc1.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.linear_fc1.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.1.linear_fc1.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.linear_fc2.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.1.linear_fc2.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.1.linear_fc2.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.1.linear_fc2.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.norm.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.2.norm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.norm.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.2.norm.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.linear_fc1.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.2.linear_fc1.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.linear_fc1.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.2.linear_fc1.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.linear_fc2.weight",
+      "megatron_name": "vision_model.deepstack_merger_list.2.linear_fc2.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.deepstack_merger_list.2.linear_fc2.bias",
+      "megatron_name": "vision_model.deepstack_merger_list.2.linear_fc2.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.norm1.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_qkv.layer_norm_weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.norm1.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_qkv.layer_norm_bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.attn.qkv.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_qkv.weight",
+      "transform": "concat_qkv"
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.attn.qkv.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_qkv.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.attn.proj.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_proj.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.attn.proj.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.self_attention.linear_proj.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.mlp.linear_fc1.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc1.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.mlp.linear_fc1.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc1.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.mlp.linear_fc2.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc2.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.mlp.linear_fc2.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc2.bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.norm2.weight",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc1.layer_norm_weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.visual.blocks.{layer}.norm2.bias",
+      "megatron_name": "vision_model.decoder_block.layers.{layer}.mlp.linear_fc1.layer_norm_bias",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.embed_tokens.weight",
+      "megatron_name": "language_model.embedding.word_embeddings.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.norm.weight",
+      "megatron_name": "language_model.decoder.final_layernorm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "lm_head.weight",
+      "megatron_name": "language_model.output_layer.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.input_layernorm.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.self_attention.linear_qkv.layer_norm_weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.mlp.gate.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.mlp.router.weight",
+      "transform": null
+    },
+    {
+      "hf_name": [
+        "model.language_model.layers.{layer}.self_attn.q_proj.weight",
+        "model.language_model.layers.{layer}.self_attn.k_proj.weight",
+        "model.language_model.layers.{layer}.self_attn.v_proj.weight"
+      ],
+      "megatron_name": "language_model.decoder.layers.{layer}.self_attention.linear_qkv.weight",
+      "transform": "concat_qkv"
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.self_attn.o_proj.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.self_attention.linear_proj.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.self_attn.q_norm.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.self_attention.q_layernorm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.self_attn.k_norm.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.self_attention.k_layernorm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.post_attention_layernorm.weight",
+      "megatron_name": "language_model.decoder.layers.{layer}.pre_mlp_layernorm.weight",
+      "transform": null
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.mlp.experts.gate_up_proj",
+      "megatron_name": "language_model.decoder.layers.{layer}.mlp.experts.linear_fc1.weight{expert}",
+      "transform": "split_expert_axis0"
+    },
+    {
+      "hf_name": "model.language_model.layers.{layer}.mlp.experts.down_proj",
+      "megatron_name": "language_model.decoder.layers.{layer}.mlp.experts.linear_fc2.weight{expert}",
+      "transform": "split_expert_axis0"
+    }
+  ]
+}

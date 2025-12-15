@@ -1077,6 +1077,198 @@ def fix_fp8_params_lose_precision_when_loading_dist_ckpt(state_dict):
                 if is_float8tensor(sharded_tensor.data):
                     sharded_tensor.data = sharded_tensor.data.from_float8().cpu()
 
+def load_checkpoint_from_hf(model, hf_model_name, mapping_file, strict=True):
+    """Load checkpoint from HuggingFace model.
+    
+    Args:
+        model: The Megatron model to load weights into.
+        hf_model_name (str): HuggingFace model name or path to local model directory.
+        mapping_file (str): Path to JSON file containing tensor name mappings.
+        strict (bool): Whether to strictly enforce that all keys match.
+    
+    Returns:
+        The model with loaded weights.
+    """
+    import json
+    import re
+    try:
+        from transformers import AutoModel
+    except ImportError:
+        raise ImportError(
+            "The 'transformers' package is required to load HuggingFace checkpoints. "
+            "Please install it with: pip install transformers"
+        )
+    
+    args = get_args()
+    model = unwrap_model(model)
+    
+    print_rank_0(f'Loading HuggingFace checkpoint from {hf_model_name}')
+    
+    # Load the mapping configuration
+    if not os.path.isfile(mapping_file):
+        raise FileNotFoundError(f"Mapping file not found: {mapping_file}")
+    
+    with open(mapping_file, 'r') as f:
+        mapping_config = json.load(f)
+    
+    # Load HuggingFace model weights
+    print_rank_0(f'Loading weights from HuggingFace model...')
+    hf_model = AutoModel.from_pretrained(hf_model_name)
+    hf_state_dict = hf_model.state_dict()
+    
+    # Get Megatron model state dict
+    if len(model) == 1:
+        megatron_state_dict = model[0].state_dict()
+    else:
+        raise NotImplementedError(
+            "Loading HuggingFace checkpoints with virtual pipeline parallelism is not yet supported"
+        )
+    
+    # Derive layer indices from the target state dict to support {layer} placeholders
+    lang_layers = sorted({int(m.group(1)) for k in megatron_state_dict.keys()
+                          if (m := re.search(r"language_model\.decoder\.layers\.(\d+)\.", k))})
+    vision_layers = sorted({int(m.group(1)) for k in megatron_state_dict.keys()
+                            if (m := re.search(r"vision_model\.decoder_block\.layers\.(\d+)\.", k))})
+
+    # Derive expert indices per layer to support {expert} placeholders
+    expert_indices = {}
+    expert_pattern = re.compile(r"language_model\.decoder\.layers\.(\d+)\.mlp\.experts\.linear_fc1\.weight(\d+)")
+    for key in megatron_state_dict.keys():
+        m = expert_pattern.search(key)
+        if m:
+            layer_idx = int(m.group(1))
+            expert_idx = int(m.group(2))
+            expert_indices.setdefault(layer_idx, set()).add(expert_idx)
+    expert_indices = {k: sorted(v) for k, v in expert_indices.items()}
+
+    def layer_set_for_pattern(pattern: str):
+        if 'language_model.decoder.layers.{layer}' in pattern:
+            return lang_layers or list(range(args.num_layers))
+        if 'vision_model.decoder_block.layers.{layer}' in pattern:
+            return vision_layers
+        return []
+
+    # Apply mappings
+    print_rank_0('Applying tensor mappings...')
+    mapped_state_dict = {}
+    mapping_rules = mapping_config.get('mappings', [])
+    
+    for rule in mapping_rules:
+        hf_pattern = rule['hf_name']
+        megatron_pattern = rule['megatron_name']
+        transform = rule.get('transform', None)
+        
+        # Helper to expand {layer} / {expert}
+        def expand_placeholders():
+            layers = layer_set_for_pattern(megatron_pattern) or ['']
+            combos = []
+            for li in layers:
+                layer_str = str(li)
+                experts = None
+                if '{expert}' in megatron_pattern or '{expert}' in str(hf_pattern):
+                    li_int = int(li) if layer_str != '' else None
+                    experts = expert_indices.get(li_int, []) if li_int is not None else []
+                    if not experts:
+                        print_rank_0(f'WARNING: No experts found for layer {li_int} while expanding {hf_pattern} -> {megatron_pattern}')
+                if experts is None:
+                    combos.append({'layer': layer_str, 'expert': None})
+                else:
+                    combos.extend({'layer': layer_str, 'expert': str(ei)} for ei in experts)
+            return combos
+
+        # Handle list of HF keys (for combining Q,K,V), with optional {layer}/{expert}
+        if isinstance(hf_pattern, list):
+            for combo in expand_placeholders():
+                hf_keys = [hk.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'] or '') for hk in hf_pattern]
+                mega_key = megatron_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'] or '')
+                tensors = []
+                for hf_key in hf_keys:
+                    if hf_key in hf_state_dict:
+                        tensors.append(hf_state_dict[hf_key])
+                    else:
+                        if strict:
+                            raise KeyError(f"HuggingFace key not found: {hf_key}")
+                        else:
+                            print_rank_0(f'WARNING: HuggingFace key not found: {hf_key}')
+                if tensors:
+                    if transform == 'concat_qkv':
+                        combined = torch.cat(tensors, dim=0)
+                    else:
+                        combined = torch.cat(tensors, dim=0)
+                    mapped_state_dict[mega_key] = combined
+
+        # Handle expert weight splitting, with optional {layer}/{expert}
+        elif transform and 'split_expert_axis0' in transform:
+            for combo in expand_placeholders():
+                if combo['expert'] is None:
+                    continue
+                expert_idx = int(combo['expert'])
+                hf_key = hf_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'])
+                mega_key = megatron_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'])
+                if hf_key in hf_state_dict:
+                    tensor = hf_state_dict[hf_key]
+                    expert_tensor = tensor[expert_idx:expert_idx+1].squeeze(0)
+                    mapped_state_dict[mega_key] = expert_tensor
+                else:
+                    if strict:
+                        raise KeyError(f"HuggingFace key not found: {hf_key}")
+                    else:
+                        print_rank_0(f'WARNING: HuggingFace key not found: {hf_key}')
+
+        # Handle pattern matching with {layer}/{expert} on single tensors
+        elif ('{layer}' in hf_pattern or '{layer}' in megatron_pattern or
+              '{expert}' in hf_pattern or '{expert}' in megatron_pattern):
+            for combo in expand_placeholders():
+                hf_key = hf_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'] or '')
+                megatron_key = megatron_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'] or '')
+
+                if hf_key in hf_state_dict:
+                    tensor = hf_state_dict[hf_key]
+                    if transform == 'transpose':
+                        tensor = tensor.t()
+                    elif transform is not None and not transform.startswith(('concat', 'split')):
+                        print_rank_0(f'WARNING: Unknown transform "{transform}" for {hf_key}')
+                    mapped_state_dict[megatron_key] = tensor
+                else:
+                    if strict:
+                        raise KeyError(f"HuggingFace key not found: {hf_key}")
+                    else:
+                        print_rank_0(f'WARNING: HuggingFace key not found: {hf_key}')
+
+        # Direct mapping without wildcards
+        else:
+            if hf_pattern in hf_state_dict:
+                tensor = hf_state_dict[hf_pattern]
+                if transform == 'transpose':
+                    tensor = tensor.t()
+                elif transform == 'concat_qkv':
+                    # No-op: HF already provides concatenated QKV along the leading dimension.
+                    pass
+                elif transform is not None and not transform.startswith(('split', 'concat')):
+                    print_rank_0(f'WARNING: Unknown transform "{transform}" for {hf_pattern}')
+                mapped_state_dict[megatron_pattern] = tensor
+            else:
+                if strict:
+                    raise KeyError(f"HuggingFace key not found: {hf_pattern}")
+                else:
+                    print_rank_0(f'WARNING: HuggingFace key not found: {hf_pattern}')
+    
+    # Load the mapped state dict into the model
+    print_rank_0('Loading mapped weights into Megatron model...')
+    missing_keys, unexpected_keys = model[0].load_state_dict(mapped_state_dict, strict=strict)
+    
+    if missing_keys:
+        print_rank_0(f'Missing keys in Megatron model: {missing_keys}')
+    if unexpected_keys:
+        print_rank_0(f'Unexpected keys from HuggingFace model: {unexpected_keys}')
+    
+    # Cleanup
+    del hf_model
+    del hf_state_dict
+    torch.cuda.empty_cache()
+    
+    print_rank_0('Successfully loaded HuggingFace checkpoint')
+    return model
 
 def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', strict=True,
                     checkpointing_context=None, skip_load_to_model_and_opt=False):

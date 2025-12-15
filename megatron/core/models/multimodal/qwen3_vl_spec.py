@@ -56,6 +56,7 @@ def decoder_model_with_transformer_engine_default_spec(
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
+            pre_mlp_layernorm=LNImpl,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),

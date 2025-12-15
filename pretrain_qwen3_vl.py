@@ -99,11 +99,11 @@ def model_provider(
         language_transformer_layer_spec = import_module(args.spec)
     elif args.transformer_impl == "transformer_engine":
         language_transformer_layer_spec = decoder_model_with_transformer_engine_default_spec(
-            args.num_experts, args.moe_grouped_gemm
+            args.num_experts, args.moe_grouped_gemm, qk_layernorm=args.qk_layernorm
         )
     else:  # transformer_impl == "local"
         language_transformer_layer_spec = decoder_model_with_local_default_spec(
-            args.num_experts, args.moe_grouped_gemm
+            args.num_experts, args.moe_grouped_gemm, qk_layernorm=args.qk_layernorm
         )
 
     # Prepare mask type for any required padding to support CP/SP sequence sharding.
@@ -122,6 +122,11 @@ def model_provider(
     # TODO: Make these configurable via input .yaml config.
     qwen3_vision_config = Qwen3VisionConfig()
     vision_transformer_config = deepcopy(language_transformer_config)
+    # vit uses bias
+    vision_transformer_config.add_bias_linear = True
+    vision_transformer_config.add_qkv_bias = True
+    # vit uses layernorm (not rmsnorm)
+    vision_transformer_config.normalization = "LayerNorm"
     # make sure this is aligned with the vision model config in Qwen3VisionConfig
     vision_transformer_config.hidden_size = qwen3_vision_config.hidden_size
     vision_transformer_config.activation_func = partial(F.gelu, approximate='tanh')
@@ -163,6 +168,7 @@ def model_provider(
         if args.use_packed_sequence or mp_padding_needed > 0:
             # Use THD data format
             language_max_sequence_length = args.decoder_seq_length * args.micro_batch_size
+    # with torch.device("cpu"):
     model = Qwen3VLModel(
         language_transformer_config=language_transformer_config,
         language_transformer_layer_spec=language_transformer_layer_spec,
@@ -183,6 +189,35 @@ def model_provider(
         freeze_vision_projection=False,
     )
 
+    # load hf model for reference
+    # from transformers import AutoModelForImageTextToText
+    # hf_model = AutoModelForImageTextToText.from_pretrained(
+    #     "Qwen/Qwen3-VL-30B-A3B-Instruct", dtype="auto", device_map="cpu"
+    # )
+
+    # import code
+    # code.interact(local=locals())
+
+    # with open("./hf_model_keys.json", "w") as f:
+    #     import json
+    #     state_dict_keys = list(hf_model.state_dict().keys())
+    #     # also get weight shape
+    #     for key in state_dict_keys:
+    #         state_dict_keys[state_dict_keys.index(key)] = (key, str(hf_model.state_dict()[key].shape))
+    #     json.dump(state_dict_keys, f, indent=4)
+    
+    # with open("./megatron_model_keys.json", "w") as f:
+    #     import json
+    #     state_dict_keys = list(model.state_dict().keys())
+    #     # also get weight shape
+    #     for key in state_dict_keys:
+    #         if hasattr(model.state_dict()[key], 'shape'):
+    #             state_dict_keys[state_dict_keys.index(key)] = (key, str(model.state_dict()[key].shape))
+    #         else:
+    #             state_dict_keys[state_dict_keys.index(key)] = (key, "N/A")
+    #     json.dump(state_dict_keys, f, indent=4)
+
+    # exit(0)
     return model
 
 def train_valid_test_datasets_provider(train_val_test_num_samples):

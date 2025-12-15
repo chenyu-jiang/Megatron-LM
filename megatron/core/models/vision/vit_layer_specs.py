@@ -64,7 +64,6 @@ def get_qwen3_vit_layer_with_transformer_engine_spec() -> ModuleSpec:
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
-            input_layernorm=LNImpl,
             self_attention=ModuleSpec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.no_mask,
@@ -76,7 +75,6 @@ def get_qwen3_vit_layer_with_transformer_engine_spec() -> ModuleSpec:
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=LNImpl,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),

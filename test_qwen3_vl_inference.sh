@@ -71,14 +71,15 @@ DATA_ARGS=(
 # For text-only inference, leave --image-paths empty
 # For multimodal inference, provide both --prompts and --image-paths
 INFERENCE_ARGS=(
-    --num-tokens-to-generate 50
+    --num-tokens-to-generate 256
+    --inference-max-seq-length 131072
     --max-batch-size 1
     --temperature 1.0
     --top-k 1
     --top-p 0.0
-    --prompts "What is this image about?" "Describe the content"
+    --prompts "What is this image about?"
     # Uncomment and set image paths for multimodal inference:
-    # --image-paths "/path/to/image1.jpg" "/path/to/image2.jpg"
+    --image-paths "/nfs/cyjiang/workdir/test_image/demo.jpeg"
 )
 
 # Other arguments

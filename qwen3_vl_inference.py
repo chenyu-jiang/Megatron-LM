@@ -191,6 +191,7 @@ def get_inference_engine(args: Namespace, model, hf_tokenizer):
         fp32_residual_connection=args.fp32_residual_connection,
         params_dtype=args.params_dtype,
         padded_vocab_size=args.padded_vocab_size,
+        inference_max_seq_length=args.inference_max_seq_length,
     )
     
     # Use Qwen3VL inference wrapper
@@ -239,7 +240,7 @@ def main():
     )
     
     args = get_args()
-    
+
     print_rank_0(f"Loading Qwen3-VL model...")
     
     # Load the model
@@ -389,7 +390,9 @@ def main():
             print_rank_0(f"Input prompt: {prompts[idx]}")
             if idx < len(image_paths) and image_paths[idx]:
                 print_rank_0(f"Input image: {image_paths[idx]}")
-            print_rank_0(f"Generated text:\n{result.generated_text}")
+            # filter out special tokens from generated text
+            cleaned_text = [t for t in result.generated_text if not t.startswith("<|")]
+            print_rank_0(f"Generated text:\n{cleaned_text}")
             print_rank_0(f"Generated tokens: {len(result.generated_tokens)}")
         
         print_rank_0(f"\n--- SUMMARY ---")

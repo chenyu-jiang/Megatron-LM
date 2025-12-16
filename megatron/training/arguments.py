@@ -84,6 +84,8 @@ def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     args.rank = int(os.getenv('RANK', '0'))
     args.world_size = int(os.getenv("WORLD_SIZE", '1'))
 
+    # args.use_cpu_initialization = True
+
     return args
 
 

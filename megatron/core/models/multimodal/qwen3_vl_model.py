@@ -437,23 +437,29 @@ class Qwen3VLModel(MegatronModule):
                 otherwise logits of shape [b, s, vocab_size].
             loss_mask (torch.Tensor): Loss mask expanded to combined sequence length. Shape [b, s].
         """
-        use_inference_kv_cache = (
-            inference_params is not None
-            and "image_tokens_count" in inference_params.key_value_memory_dict
-        )
+        use_inference_kv_cache = inference_params is not None
         has_images = images is not None and images.shape[0] > 0
 
         # If running inference, we can skip image token computation
         # if they were computed already earlier for this sample.
         deepstack_image_embeds = None
         if use_inference_kv_cache:
-            input_embeddings = None
+            if self.add_encoder:
+                input_embeddings = self.language_model.embedding(input_ids, None)
+                image_mask = self.get_placeholder_mask(
+                    input_ids, inputs_embeds=input_embeddings, image_features=None
+                )
+            else:
+                input_embeddings = self.encoder_hidden_state
         elif self.add_encoder and not has_images:
             # If no images provided, use an empty image embeddings tensor.
             input_embeddings = self.language_model.embedding(input_ids, None)
             # image_embeddings = torch.tensor([], dtype=images.dtype, device=images.device).reshape(
             #     0, 0, 0
             # )
+            image_mask = self.get_placeholder_mask(
+                input_ids, inputs_embeds=input_embeddings, image_features=None
+            )
         elif self.add_encoder and has_images:
             input_embeddings = self.language_model.embedding(input_ids, None)
             image_embeddings, deepstack_image_embeds = self.get_image_features(
@@ -470,10 +476,10 @@ class Qwen3VLModel(MegatronModule):
             # TODO: Support batched inference.
             # In inference, the language model KV cache will be updated for image token positions.
             # Store the image tokens sequence length to be used as an offset to the KV cache later.
-            if inference_params is not None:
-                inference_params.key_value_memory_dict["image_tokens_count"] = (
-                    image_embeddings.shape[0] * image_embeddings.shape[1]
-                )
+            # if inference_params is not None:
+            #     inference_params.key_value_memory_dict["image_tokens_count"] = (
+            #         image_embeddings.shape[0] * image_embeddings.shape[1]
+            #     )
         else:
             input_embeddings = self.encoder_hidden_state
 

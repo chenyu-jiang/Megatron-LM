@@ -4,6 +4,8 @@ from typing import Any, Dict
 import torch
 
 from megatron.core import parallel_state
+from megatron.training.utils import unwrap_model
+from megatron.core.models.multimodal.qwen3_vl_model import Qwen3VLModel
 from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import (
     GPTInferenceWrapper,
 )
@@ -205,4 +207,124 @@ class VLMInferenceWrapper(GPTInferenceWrapper):
                     - num_image_tokens
                 )
 
+        return logits
+
+class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
+    def prep_inference_input(
+        self,
+        prompts_tokens: torch.Tensor,
+        images: torch.Tensor,
+    ):
+        """Prepares the inference input data.
+
+        Args:
+            prompts_tokens (torch.Tensor): A tensor of shape [batch_size, max_seq_len]
+            num_img_embeddings_per_tile (int): The number of image embeddings per tile
+            images (torch.Tensor): The image embeddings
+            num_tiles (torch.Tensor): The number of tiles for each input image
+            decoder_seq_length (int): The decoder sequence length
+        """
+        inference_input = GPTInferenceWrapper.prep_inference_input(self, prompts_tokens)
+
+        batch_size, max_sequence_length = prompts_tokens.shape
+        self.inference_params = InferenceParams(
+            batch_size, max_sequence_length
+        )
+
+        inference_input["images"] = images
+
+        return inference_input
+
+    def get_batch_for_context_window(
+        self,
+        inference_input: Dict[str, Any],
+        context_start_position: int,
+        context_end_position: int,
+    ) -> Dict[str, Any]:
+        """Returns the inference data given context window
+
+        This function gets called iteratively in a loop . Given the start and end context positions , it extracts the appropriate data.
+
+        Args:
+            inference_input (Dict[str, Any]): The inference input for the batch.
+            context_start_position (int): Start of the context window. During the first inference step it is mostly 0
+            context_end_position (int): End of the context window. During the last inference step it will mostly be the max generated sequence length.
+
+        Returns:
+            Dict[str, Any]: A dict of inputs that will be used by your model in the forward step
+        """
+        tokens = inference_input["tokens"]
+        position_ids = inference_input["position_ids"]
+        images = inference_input["images"]
+
+        tokens2use = tokens[:, context_start_position:context_end_position]
+        positions2use = position_ids[:, context_start_position:context_end_position]
+
+        return {
+            "tokens": tokens2use,
+            "position_ids": positions2use,
+            "images": images,
+        }
+
+    def run_one_forward_step(self, inference_input: Dict[str, Any]) -> torch.Tensor:
+        tokens = inference_input["tokens"]
+        unwrapped_model: Qwen3VLModel = unwrap_model(self.model)
+        num_image_tokens = (tokens == unwrapped_model.qwen3_language_config.image_token_id).sum().item()
+        num_tokens = tokens.size(1)
+        recv_buffer_seq_len = None
+        if num_image_tokens > 0:
+            # When there are image tokens and this stage only receives vision embeddings,
+            # adjust the recv buffer seq length to match the image embeddings sequence length.
+            # If there are image tokens and this stage receives full embeddings, make sure we
+            # compensate for expansion of image tokens.
+            # Note that this will set a recv_buffer_seq_len for the encoder stage,
+            # this length is irrelevant since that recv buffer is never allocated.
+            if self._recv_only_vision_embeds:
+                recv_buffer_seq_len = num_image_tokens
+            else:
+                recv_buffer_seq_len = num_tokens
+        elif self._recv_only_vision_embeds:
+            # If this stage only receives vision embeddings and there are no image tokens
+            # we won't run the encoder and therefore shouldn't try to recv.
+            recv_buffer_seq_len = 0
+
+        # If the pipeline stage only has a vision encoder, then it only needs to
+        # run when there are image tokens
+        if not (self._encoder_only and num_image_tokens == 0):
+            output = GPTInferenceWrapper.run_one_forward_step(
+                self, inference_input, recv_buffer_seq_len=recv_buffer_seq_len
+            )
+        else:
+            output = None
+        logits = output
+
+        # we do not need to update sequence length offset for Qwen3VL
+
+        return logits
+
+    def _forward(self, inference_input: Dict[str, Any]):
+        """Runs a forward pass of the model.
+
+        Args:
+            inference_input(Dict[str, Any]): The input data.
+
+        Returns:
+            The model output logits.
+        """
+        images = inference_input["images"]
+        tokens = inference_input["tokens"]
+        position_ids = inference_input["position_ids"]
+
+        output = self.model(
+            images,
+            tokens,
+            position_ids=position_ids,
+            attention_mask=None,
+            inference_params=self.inference_params,
+            runtime_gather_output=True,
+        )
+        if isinstance(output, tuple):
+            logits, _ = output
+        else:
+            logits = output
         return logits

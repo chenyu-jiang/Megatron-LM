@@ -248,6 +248,7 @@ class Attention(MegatronModule, ABC):
         )
 
         if self.config.flash_decode:
+            assert not self.is_qwen3_vl_attn, "Flash decoding is not supported for Qwen3 VL attention"
             assert (
                 rotary_pos_cos is not None and rotary_pos_sin is not None
             ), "Flash decoding requires precomputed cos and sin tensors"
@@ -266,6 +267,13 @@ class Attention(MegatronModule, ABC):
             # Apply RoPE before we store the keys to make it compatible with flash decoding kernel.
             key = apply_rotary_pos_emb_with_cos_sin(key, rotary_pos_cos_k, rotary_pos_sin_k)
             query = apply_rotary_pos_emb_with_cos_sin(query, rotary_pos_cos_q, rotary_pos_sin_q)
+        elif self.is_qwen3_vl_attn:
+            assert (
+                rotary_pos_cos is not None and rotary_pos_sin is not None
+            ), "Qwen3 VL attention requires precomputed cos and sin tensors"
+            # also apply RoPE here, so cached kv have RoPE applied
+            key = apply_rotary_pos_emb_with_cos_sin(key, rotary_pos_cos, rotary_pos_sin)
+            query = apply_rotary_pos_emb_with_cos_sin(query, rotary_pos_cos, rotary_pos_sin)
         else:
             rotary_pos_cos_q = None
             rotary_pos_sin_q = None
@@ -448,7 +456,9 @@ class Attention(MegatronModule, ABC):
             # otherwise, only relative positional embedding takes effect
             # value_layer = apply_rotary_pos_emb(value_layer, k_pos_emb)
 
-        if self.is_qwen3_vl_attn:
+        if self.is_qwen3_vl_attn and inference_params is None:
+            # apply rotary pos emb for qwen3 vl attention during training
+            # in inference, it is applied during _adjust_key_value_for_inference
             query = apply_rotary_pos_emb_with_cos_sin(query, cos=rotary_pos_cos, sin=rotary_pos_sin,
                                                      cu_seqlens=packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None,
                                                      max_seqlen=packed_seq_params.max_seqlen_q if packed_seq_params is not None else None)

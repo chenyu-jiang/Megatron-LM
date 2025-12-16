@@ -262,8 +262,8 @@ class GPTModel(LanguageModule):
             rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb(
                 decoder_input, position_ids
             )
-            rotary_pos_cos = rotary_pos_cos.squeeze()
-            rotary_pos_sin = rotary_pos_sin.squeeze()
+            rotary_pos_cos = rotary_pos_cos.squeeze(0)
+            rotary_pos_sin = rotary_pos_sin.squeeze(0)
         if (
             (self.config.enable_cuda_graph or self.config.flash_decode)
             and rotary_pos_cos is not None

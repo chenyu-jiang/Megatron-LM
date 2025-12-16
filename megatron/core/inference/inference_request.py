@@ -50,3 +50,9 @@ class VLMInferenceRequest(InferenceRequest):
     imgs: torch.Tensor
     num_tiles: torch.Tensor
     decoder_seq_length: int
+
+
+@dataclass(kw_only=True)
+class Qwen3VLInferenceRequest(InferenceRequest):
+    """Class for a Qwen3VL inference request"""
+    imgs: torch.Tensor

@@ -33,6 +33,8 @@ from megatron.core.parallel_state import (
 from megatron.core.tensor_parallel import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from megatron.core.tensor_parallel.layers import (
     _initialize_affine_weight_cpu,
+    _is_shape_matched,
+    _load_tensor_parallel_weight,
     set_tensor_model_parallel_attributes,
 )
 from megatron.core.tensor_parallel.random import get_data_parallel_rng_tracker_name
@@ -406,12 +408,93 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
                     self.bias.zero_()
                 setattr(self.bias, 'allreduce', True)
 
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        TELayerNormColumnParallelLinear shards weight and bias along dimension 0 (output dimension).
+        This hook extracts the appropriate shards from a full checkpoint if needed.
+        """
+        weight_key = f'{prefix}weight'
+        bias_key = f'{prefix}bias'
+
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape
+            
+            # If shapes don't match, extract shard from full checkpoint
+            if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # The input dimension (dimension 1) should match
+                if loaded_weight.shape[1] == current_weight_shape[1]:
+                    # This is a full checkpoint, extract the output shard (dimension 0)
+                    try:
+                        shard = _load_tensor_parallel_weight(
+                            loaded_tensor=loaded_weight,
+                            partition_dim=0,
+                            tensor_model_parallel_rank=get_tensor_model_parallel_rank(),
+                            tensor_model_parallel_world_size=get_tensor_model_parallel_world_size(),
+                        )
+                        state_dict[weight_key] = shard
+                    except Exception as e:
+                        error_msgs.append(f"Error loading weight shard: {str(e)}")
+                else:
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: expected {current_weight_shape}, "
+                            f"got {loaded_weight.shape}"
+                        )
+        else:
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
+
+        # if self.use_bias:
+        #     from megatron.training import get_args
+        #     if get_args().rank == 0:
+        #         import code
+        #         code.interact(local=locals())
+        #     torch.distributed.barrier()
+
+        # Handle bias (sharded along dimension 0)
+        if self.use_bias and bias_key in state_dict:
+            loaded_bias = state_dict[bias_key]
+            current_bias_shape = self.bias.shape
+
+            if not _is_shape_matched(loaded_bias.shape, current_bias_shape):
+                # Extract the bias shard (dimension 0)
+                try:
+                    shard = _load_tensor_parallel_weight(
+                        loaded_tensor=loaded_bias,
+                        partition_dim=0,
+                        tensor_model_parallel_rank=get_tensor_model_parallel_rank(),
+                        tensor_model_parallel_world_size=get_tensor_model_parallel_world_size(),
+                    )
+                    state_dict[bias_key] = shard
+                except Exception as e:
+                    error_msgs.append(f"Error loading bias shard: {str(e)}")
+        elif self.use_bias:
+            if bias_key not in missing_keys:
+                missing_keys.append(bias_key)
+
     def forward(self, x):
         """Forward."""
         _is_first_microbatch = (
             None if self.disable_parameter_transpose_cache else self.is_first_microbatch
         )
+        from megatron.training import print_all_ranks
+        # print_all_ranks(f"TELayerNormColumnParallelLinear forward: x.shape = {x.shape}")
         out = super().forward(x, is_first_microbatch=_is_first_microbatch)
+        # print_all_ranks(f"TELayerNormColumnParallelLinear forward: out.shape = {out.shape}")
         self.is_first_microbatch = False
 
         # TE only returns a tuple when return_bias is True, otherwise
@@ -505,6 +588,85 @@ class TEColumnParallelLinear(TELinear):
                     self.bias.zero_()
                 setattr(self.bias, 'allreduce', True)
 
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        TEColumnParallelLinear shards weight and bias along dimension 0 (output dimension).
+        This hook extracts the appropriate shards from a full checkpoint if needed.
+        """
+        weight_key = f'{prefix}weight'
+        bias_key = f'{prefix}bias'
+        
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape
+            
+            # If shapes don't match, extract shard from full checkpoint
+            if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # The input dimension (dimension 1) should match
+                if loaded_weight.shape[1] == current_weight_shape[1]:
+                    # This is a full checkpoint, extract the output shard (dimension 0)
+                    try:
+                        shard = _load_tensor_parallel_weight(
+                            loaded_tensor=loaded_weight,
+                            partition_dim=0,
+                            tensor_model_parallel_rank=get_tensor_model_parallel_rank()
+                            if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                            else get_expert_tensor_parallel_rank(),
+                            tensor_model_parallel_world_size=get_tensor_model_parallel_world_size()
+                            if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                            else get_expert_tensor_parallel_world_size(),
+                        )
+                        state_dict[weight_key] = shard
+                    except Exception as e:
+                        error_msgs.append(f"Error loading weight shard: {str(e)}")
+                else:
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: expected {current_weight_shape}, "
+                            f"got {loaded_weight.shape}"
+                        )
+        else:
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
+        
+        # Handle bias (sharded along dimension 0)
+        if self.use_bias and bias_key in state_dict:
+            loaded_bias = state_dict[bias_key]
+            current_bias_shape = self.bias.shape
+            
+            if not _is_shape_matched(loaded_bias.shape, current_bias_shape):
+                # Extract the bias shard (dimension 0)
+                try:
+                    shard = _load_tensor_parallel_weight(
+                        loaded_tensor=loaded_bias,
+                        partition_dim=0,
+                        tensor_model_parallel_rank=get_tensor_model_parallel_rank()
+                        if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                        else get_expert_tensor_parallel_rank(),
+                        tensor_model_parallel_world_size=get_tensor_model_parallel_world_size()
+                        if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                        else get_expert_tensor_parallel_world_size(),
+                    )
+                    state_dict[bias_key] = shard
+                except Exception as e:
+                    error_msgs.append(f"Error loading bias shard: {str(e)}")
+        elif self.use_bias:
+            if bias_key not in missing_keys:
+                missing_keys.append(bias_key)
+
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
         """Sharding along axis 0, bias sharded"""
         state_dict = self.state_dict(prefix='', keep_vars=True)
@@ -588,6 +750,60 @@ class TERowParallelLinear(TELinear):
                     self.bias.zero_()
                 setattr(self.bias, 'allreduce', True)
                 setattr(self.bias, 'sequence_parallel', config.sequence_parallel)
+
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        TERowParallelLinear shards weight along dimension 1 (input dimension).
+        Bias is not sharded in row-parallel mode.
+        This hook extracts the appropriate weight shard from a full checkpoint if needed.
+        """
+        weight_key = f'{prefix}weight'
+        
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape
+            
+            # If shapes don't match, extract shard from full checkpoint
+            if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # The output dimension (dimension 0) should match
+                if loaded_weight.shape[0] == current_weight_shape[0]:
+                    # This is a full checkpoint, extract the input shard (dimension 1)
+                    try:
+                        shard = _load_tensor_parallel_weight(
+                            loaded_tensor=loaded_weight,
+                            partition_dim=1,
+                            tensor_model_parallel_rank=get_tensor_model_parallel_rank()
+                            if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                            else get_expert_tensor_parallel_rank(),
+                            tensor_model_parallel_world_size=get_tensor_model_parallel_world_size()
+                            if not hasattr(self, 'expert_parallel') or not self.expert_parallel
+                            else get_expert_tensor_parallel_world_size(),
+                        )
+                        state_dict[weight_key] = shard
+                    except Exception as e:
+                        error_msgs.append(f"Error loading weight shard: {str(e)}")
+                else:
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: expected {current_weight_shape}, "
+                            f"got {loaded_weight.shape}"
+                        )
+        else:
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
         """Sharding along axis 1, bias not sharded"""
@@ -866,6 +1082,10 @@ if is_te_min_version("1.9.0.dev0"):
             if is_expert:
                 extra_kwargs["rng_tracker_name"] = get_expert_parallel_rng_tracker_name()
 
+            # Store the original parallel_mode before it might be reset
+            # This is needed for checkpoint loading hooks
+            self._original_parallel_mode = parallel_mode
+
             # The comms between TP and EP group is explicitly handled by MoE token dispatcher.
             # So we disable comms by making TE agnostic of model parallel.
             if is_expert:
@@ -960,6 +1180,114 @@ if is_te_min_version("1.9.0.dev0"):
                 state_dict[f"{prefix}_extra_state"] = self._encode_extra_state(extra_state)
 
             self._register_load_state_dict_pre_hook(merge_extra_states, with_module=True)
+            
+            # Register pre-hook to handle loading tensor parallel weights from full checkpoints
+            self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook_tp)
+
+        def _load_state_dict_pre_hook_tp(
+            self,
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        ):
+            """Pre-hook to handle loading from full (non-sharded) checkpoints.
+            
+            TEGroupedLinear has multiple weight tensors (weight0, weight1, ..., weightN)
+            that may be sharded depending on parallel_mode.
+            """
+            # Determine world size and rank based on parallel mode
+            if hasattr(self, 'expert_parallel') and self.expert_parallel:
+                world_size = get_expert_tensor_parallel_world_size()
+                rank = get_expert_tensor_parallel_rank()
+            else:
+                world_size = get_tensor_model_parallel_world_size()
+                rank = get_tensor_model_parallel_rank()
+            
+            # Use the original parallel mode (before it was reset for explicit_expert_comm)
+            parallel_mode = getattr(self, '_original_parallel_mode', None)
+            
+            # Process each GEMM weight
+            for gemm_idx in range(self.num_gemms):
+                weight_key = f'{prefix}weight{gemm_idx}'
+                bias_key = f'{prefix}bias{gemm_idx}'
+                
+                if weight_key in state_dict and parallel_mode is not None:
+                    loaded_weight = state_dict[weight_key]
+                    current_weight = getattr(self, f'weight{gemm_idx}', None)
+                    
+                    if current_weight is not None:
+                        current_weight_shape = current_weight.shape
+                        
+                        # If shapes don't match, extract shard from full checkpoint
+                        if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                            if parallel_mode == "column":
+                                # Column parallel: shard output dimension (dim 0)
+                                if loaded_weight.shape[1] == current_weight_shape[1]:
+                                    try:
+                                        shard = _load_tensor_parallel_weight(
+                                            loaded_tensor=loaded_weight,
+                                            partition_dim=0,
+                                            tensor_model_parallel_rank=rank,
+                                            tensor_model_parallel_world_size=world_size,
+                                        )
+                                        state_dict[weight_key] = shard
+                                    except Exception as e:
+                                        error_msgs.append(f"Error loading {weight_key} shard: {str(e)}")
+                                else:
+                                    if strict:
+                                        error_msgs.append(
+                                            f"Shape mismatch for {weight_key}: expected {current_weight_shape}, "
+                                            f"got {loaded_weight.shape}"
+                                        )
+                            elif parallel_mode == "row":
+                                # Row parallel: shard input dimension (dim 1)
+                                if loaded_weight.shape[0] == current_weight_shape[0]:
+                                    try:
+                                        shard = _load_tensor_parallel_weight(
+                                            loaded_tensor=loaded_weight,
+                                            partition_dim=1,
+                                            tensor_model_parallel_rank=rank,
+                                            tensor_model_parallel_world_size=world_size,
+                                        )
+                                        state_dict[weight_key] = shard
+                                    except Exception as e:
+                                        error_msgs.append(f"Error loading {weight_key} shard: {str(e)}")
+                                else:
+                                    if strict:
+                                        error_msgs.append(
+                                            f"Shape mismatch for {weight_key}: expected {current_weight_shape}, "
+                                            f"got {loaded_weight.shape}"
+                                        )
+                elif parallel_mode is not None:
+                    if weight_key not in missing_keys:
+                        missing_keys.append(weight_key)
+                
+                # Handle bias (only for column parallel, sharded along dim 0)
+                if self.use_bias and bias_key in state_dict and parallel_mode == "column":
+                    loaded_bias = state_dict[bias_key]
+                    current_bias = getattr(self, f'bias{gemm_idx}', None)
+                    
+                    if current_bias is not None:
+                        current_bias_shape = current_bias.shape
+                        
+                        if not _is_shape_matched(loaded_bias.shape, current_bias_shape):
+                            try:
+                                shard = _load_tensor_parallel_weight(
+                                    loaded_tensor=loaded_bias,
+                                    partition_dim=0,
+                                    tensor_model_parallel_rank=rank,
+                                    tensor_model_parallel_world_size=world_size,
+                                )
+                                state_dict[bias_key] = shard
+                            except Exception as e:
+                                error_msgs.append(f"Error loading {bias_key} shard: {str(e)}")
+                elif self.use_bias and parallel_mode == "column":
+                    if bias_key not in missing_keys:
+                        missing_keys.append(bias_key)
 
         def forward(self, x, m_splits):
             """Forward."""

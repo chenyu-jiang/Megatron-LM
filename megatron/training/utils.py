@@ -359,6 +359,14 @@ def print_rank_0(message):
     else:
         print(message, flush=True)
 
+def print_all_ranks(message):
+    """If distributed is initialized, print on all ranks."""
+    if torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+        print(f"[Rank {rank}] {message}", flush=True)
+    else:
+        print(message, flush=True)
+
 def is_rank0():
     """Returns true if called in the rank0, false otherwise"""
     return torch.distributed.is_initialized() and torch.distributed.get_rank() == 0

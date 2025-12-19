@@ -19,8 +19,8 @@ sys.path.append(
 )
 
 
-from megatron.training import get_args, get_tokenizer, print_rank_0
-from megatron.training.checkpointing import load_checkpoint
+from megatron.training import get_args, get_tokenizer, print_rank_0, print_all_ranks
+from megatron.training.checkpointing import load_checkpoint, load_checkpoint_from_hf
 from megatron.training.initialize import initialize_megatron
 from megatron.training import get_model
 from megatron.core import parallel_state
@@ -93,6 +93,30 @@ def add_inference_args(parser):
         action="store_true",
         default=False,
         help='Use thumbnail for image tiling',
+    )
+    # HF checkpoint loading options
+    group.add_argument(
+        "--hf-model-name",
+        type=str,
+        default=None,
+        help=(
+            "HuggingFace model name or local path to load weights from. "
+            "If provided, will use load_checkpoint_from_hf instead of --load."
+        ),
+    )
+    group.add_argument(
+        "--hf-mapping-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to HF->Megatron mapping JSON. Defaults to hf_checkpoint_mapping_qwen3vl.json at repo root."
+        ),
+    )
+    group.add_argument(
+        "--hf-strict",
+        action="store_true",
+        default=True,
+        help="Strictly enforce key matching when loading HF checkpoint",
     )
     group.add_argument(
         '--freeze-LM', action='store_true', default=False, help="Freeze language model weights"
@@ -193,6 +217,8 @@ def get_inference_engine(args: Namespace, model, hf_tokenizer):
         padded_vocab_size=args.padded_vocab_size,
         inference_max_seq_length=args.inference_max_seq_length,
     )
+
+    # print_all_ranks(f"Inference max sequence length: {args.inference_max_seq_length}")
     
     # Use Qwen3VL inference wrapper
     inference_wrapped_model = Qwen3VLInferenceWrapper(model, inference_wrapper_config)
@@ -206,6 +232,9 @@ def get_inference_engine(args: Namespace, model, hf_tokenizer):
     # Return the inference engine
     return MCoreEngine(text_generation_controller=text_generation_controller)
 
+def create_text_only_prompt(prompt: str) -> str:
+    return f"<|im_start|>user\n{prompt}<|im_end|><|im_start|>assistant\n"
+
 
 def create_prompt_with_image_token(prompt: str) -> str:
     """Create a text prompt with image tokens for multimodal input.
@@ -214,7 +243,7 @@ def create_prompt_with_image_token(prompt: str) -> str:
     This matches the format used in MockQwen3VLFinetuningDataset.
     """
     # Format: <|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>
-    return f"<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>"
+    return f"<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|><|im_start|>assistant\n"
 
 
 def is_first_rank():
@@ -248,8 +277,16 @@ def main():
         return model_provider(pre_process, post_process, add_encoder, add_decoder, parallel_output=False)
     
     model = get_model(wrapped_model_provider, model_type=ModelType.encoder_and_decoder, wrap_with_ddp=False)
-    
-    if args.load is not None:
+
+    # Prefer HF checkpoint if provided; otherwise fall back to Megatron checkpoint via --load
+    if getattr(args, 'hf_model_name', None):
+        default_mapping = os.path.join(os.path.dirname(__file__), 'hf_checkpoint_mapping_qwen3vl.json')
+        mapping_file = args.hf_mapping_file or default_mapping
+        print_rank_0(
+            f"Loading HF checkpoint: model={args.hf_model_name}, mapping={mapping_file}, strict={args.hf_strict}"
+        )
+        _ = load_checkpoint_from_hf(model, args.hf_model_name, mapping_file, strict=args.hf_strict)
+    elif args.load is not None:
         _ = load_checkpoint(model, None, None)
     
     model = model[0]
@@ -310,71 +347,59 @@ def main():
     
     with torch.no_grad():
         for idx, prompt in enumerate(prompts):
-            if is_first_rank():
-                # Prepare images and text for this prompt
-                if idx < len(images_to_process) and images_to_process[idx] is not None:
-                    # Multimodal: image + text
-                    prompt_with_image = create_prompt_with_image_token(prompt)
-                    processed = process_images_and_text_with_processor(
-                        images=[images_to_process[idx]],
-                        texts=[prompt_with_image],
-                        processor=processor
-                    )
-                    # Move to GPU
-                    for key in processed:
-                        if isinstance(processed[key], torch.Tensor):
-                            processed[key] = processed[key].to("cuda")
-                    
-                    # Get the processed outputs
-                    imgs = processed.get("pixel_values")
-                else:
-                    # Text-only inference
-                    processed = process_images_and_text_with_processor(
-                        images=[],
-                        texts=[prompt],
-                        processor=processor
-                    )
-                    for key in processed:
-                        if isinstance(processed[key], torch.Tensor):
-                            processed[key] = processed[key].to("cuda")
-                    
-                    imgs = None
-                
-                # Create Qwen3VL inference request with properly processed inputs
-                request = Qwen3VLInferenceRequest(
-                    request_id=inference_engine.get_new_request_id(),
-                    prompt=prompt,
-                    prompt_tokens=processed.get("input_ids").flatten().tolist(),
-                    inference_parameters=sampling_params,
-                    imgs=imgs,
+            # Prepare images and text for this prompt
+            if idx < len(images_to_process) and images_to_process[idx] is not None:
+                # Multimodal: image + text
+                # print_all_ranks(f"Prompt {idx}: creating prompt with image token.")
+                prompt = create_prompt_with_image_token(prompt)
+                # print_all_ranks(f"Prompt {idx}: processing images with processor.")
+                processed = process_images_and_text_with_processor(
+                    images=[images_to_process[idx]],
+                    texts=[prompt],
+                    processor=processor
                 )
+                # Move to GPU
+                for key in processed:
+                    if isinstance(processed[key], torch.Tensor):
+                        processed[key] = processed[key].to("cuda")
+                        # print_all_ranks(f"Prompt {idx}: key: {key}, shape: {processed[key].shape}.")
+
+                # print_all_ranks(f"Prompt {idx}: Moved input to GPU.")
                 
+                # Get the processed outputs
+                imgs = processed.get("pixel_values")
+            else:
+                # Text-only inference
+                prompt = create_text_only_prompt(prompt)
+                processed = process_images_and_text_with_processor(
+                    images=[],
+                    texts=[prompt],
+                    processor=processor
+                )
+                for key in processed:
+                    if isinstance(processed[key], torch.Tensor):
+                        processed[key] = processed[key].to("cuda")
+                
+                imgs = None
+            
+            # Create Qwen3VL inference request with properly processed inputs
+            request = Qwen3VLInferenceRequest(
+                request_id=inference_engine.get_new_request_id(),
+                prompt=prompt,
+                prompt_tokens=processed.get("input_ids").flatten().tolist(),
+                inference_parameters=sampling_params,
+                imgs=imgs,
+            )
+            # print_all_ranks(f"Prompt {idx}: created inference request, sending to engine.")
+
+            if is_first_rank():
                 # Generate
                 batch_results = inference_engine.generate(
                     inference_requests=[request]
                 )
                 results.extend(batch_results)
             else:
-                # Non-first rank still needs to participate in distributed inference
-                if idx < len(images_to_process) and images_to_process[idx] is not None:
-                    prompt_with_image = create_prompt_with_image_token(prompts[idx])
-                    processed = process_images_and_text_with_processor(
-                        images=[images_to_process[idx]],
-                        texts=[prompt_with_image],
-                        processor=processor
-                    )
-                else:
-                    processed = process_images_and_text_with_processor(
-                        images=[],
-                        texts=[prompts[idx]],
-                        processor=processor
-                    )
-                
-                for key in processed:
-                    if isinstance(processed[key], torch.Tensor):
-                        processed[key] = processed[key].to("cuda")
-                
-                inference_engine.generate(inference_requests=[])
+                inference_engine.generate(inference_requests=[request])
     
     end_time = time.perf_counter()
     latency = end_time - start_time
@@ -391,7 +416,7 @@ def main():
             if idx < len(image_paths) and image_paths[idx]:
                 print_rank_0(f"Input image: {image_paths[idx]}")
             # filter out special tokens from generated text
-            cleaned_text = [t for t in result.generated_text if not t.startswith("<|")]
+            cleaned_text = [t for t in result.generated_text if not t.startswith("<|image_pad")]
             print_rank_0(f"Generated text:\n{cleaned_text}")
             print_rank_0(f"Generated tokens: {len(result.generated_tokens)}")
         

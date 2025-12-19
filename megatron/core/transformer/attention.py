@@ -243,7 +243,7 @@ class Attention(MegatronModule, ABC):
         sequence_start = inference_params.sequence_len_offset
         sequence_end = sequence_start + key.size(0)
         assert sequence_end <= inference_key_memory.size(0), (
-            "Current sequence length is longer than expected maximum sequence length! "
+            f"Current sequence length ({sequence_end}) is longer than expected maximum sequence length ({inference_key_memory.size(0)})! "
             "Increase inference_max_seq_length."
         )
 
@@ -380,6 +380,11 @@ class Attention(MegatronModule, ABC):
         # =====================
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
+        # from megatron.training import print_all_ranks
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"Attention Layer {self.layer_number}: hidden_states.shape = {hidden_states.shape}, key_value_states.shape = {key_value_states.shape if key_value_states is not None else 'N/A'}.")
+
+
         query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
 
         # ===================================================
@@ -412,6 +417,10 @@ class Attention(MegatronModule, ABC):
             context_layer = out.view(out.size(0), out.size(1), -1)
             output, bias = self.linear_proj(context_layer)
             return output, bias
+        # from megatron.training import print_all_ranks
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"Attention Layer {self.layer_number}: query.shape = {query.shape}, key.shape = {key.shape}, value.shape = {value.shape}.")
+
 
         query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
             inference_params,
@@ -642,7 +651,14 @@ class SelfAttention(Attention):
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
+        # from megatron.training import print_all_ranks
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"SelfAttention Layer {self.layer_number} in get_query_key_value_tensors: hidden_states.shape = {hidden_states.shape}.")
         mixed_qkv, _ = self.linear_qkv(hidden_states)
+
+
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"SelfAttention Layer {self.layer_number}: mixed_qkv.shape = {mixed_qkv.shape}.")
 
         # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
         new_tensor_shape = mixed_qkv.size()[:-1] + (
@@ -653,6 +669,8 @@ class SelfAttention(Attention):
             ),
         )
         mixed_qkv = mixed_qkv.view(*new_tensor_shape)
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"SelfAttention Layer {self.layer_number}: reshaped mixed_qkv.shape = {mixed_qkv.shape}.")
 
         split_arg_list = [
             (
@@ -675,14 +693,24 @@ class SelfAttention(Attention):
             # --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
             (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
 
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"SelfAttention Layer {self.layer_number} in get_query_key_value_tensors: query.shape = {query.shape}, key.shape = {key.shape}, value.shape = {value.shape}.")
+
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
 
+        # if self.layer_number == 1:
+        #     print_all_ranks(f"SelfAttention Layer {self.layer_number} after reshape: query.shape = {query.shape}.")
+
         if self.q_layernorm is not None:
             query = self.q_layernorm(query)
+            # if self.layer_number == 1:
+            #     print_all_ranks(f"SelfAttention Layer {self.layer_number} after q_layernorm: query.shape = {query.shape}.")
 
         if self.k_layernorm is not None:
             key = self.k_layernorm(key)
+            # if self.layer_number == 1:
+            #     print_all_ranks(f"SelfAttention Layer {self.layer_number} after k_layernorm: key.shape = {key.shape}.")
 
         if self.config.test_mode:
             self.run_realtime_tests()

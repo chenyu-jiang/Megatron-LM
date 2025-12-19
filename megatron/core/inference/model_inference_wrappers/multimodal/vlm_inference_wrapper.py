@@ -224,7 +224,13 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
             num_tiles (torch.Tensor): The number of tiles for each input image
             decoder_seq_length (int): The decoder sequence length
         """
+        from megatron.training import print_all_ranks
+        # print_all_ranks(f"Qwen3VLInferenceWrapper: prep_inference_input: prompts_tokens.shape = {prompts_tokens.shape}.")
+        # print_all_ranks(f"Qwen3VLInferenceWrapper: prep_inference_input: images.shape = {images.shape}.")
         inference_input = GPTInferenceWrapper.prep_inference_input(self, prompts_tokens)
+        # for key, value in inference_input.items():
+        #     print_all_ranks(f"Qwen3VLInferenceWrapper: prep_inference_input: key: {key}, shape: {value.shape}.")
+
 
         batch_size, max_sequence_length = prompts_tokens.shape
         self.inference_params = InferenceParams(

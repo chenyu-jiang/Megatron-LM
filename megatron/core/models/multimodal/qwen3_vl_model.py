@@ -440,6 +440,10 @@ class Qwen3VLModel(MegatronModule):
         use_inference_kv_cache = inference_params is not None
         has_images = images is not None and images.shape[0] > 0
 
+        from megatron.training import print_all_ranks
+        # print_all_ranks(f"Qwen3VLModel: inference_params.max_sequence_length = {inference_params.max_sequence_length if inference_params is not None else 'N/A'}")
+        # print_all_ranks(f"Qwen3VLModel: input_ids.shape = {input_ids.shape}.")
+        # print_all_ranks(f"Qwen3VLModel: images.shape = {images.shape if images is not None else 'N/A'}.")
         # If running inference, we can skip image token computation
         # if they were computed already earlier for this sample.
         deepstack_image_embeds = None
@@ -461,11 +465,15 @@ class Qwen3VLModel(MegatronModule):
                 input_ids, inputs_embeds=input_embeddings, image_features=None
             )
         elif self.add_encoder and has_images:
+            # print_all_ranks("Qwen3VLModel: getting input embeddings.")
             input_embeddings = self.language_model.embedding(input_ids, None)
+            # print_all_ranks("Qwen3VLModel: getting image features.")
             image_embeddings, deepstack_image_embeds = self.get_image_features(
                 images, image_grid_thw=image_grid_thw
             )
             image_embeddings = torch.cat(image_embeddings, dim=0).to(images.device, images.dtype)
+            # print_all_ranks(f"Qwen3VLModel: image embeddings shape: {image_embeddings.shape}.")
+            # print_all_ranks(f"Qwen3VLModel: deepstack_image_embeds shape: {deepstack_image_embeds.shape}.")
             image_mask = self.get_placeholder_mask(
                 input_ids, inputs_embeds=input_embeddings, image_features=image_embeddings
             )
@@ -492,7 +500,9 @@ class Qwen3VLModel(MegatronModule):
         #             combined_embeddings, new_labels, new_loss_mask, packed_seq_params
         #         )
         #     )
-
+        # print_all_ranks("Qwen3VLModel: forwarding to language model.")
+        # print_all_ranks(f"Qwen3VLModel: position_ids.shape = {position_ids.shape}.")
+        # print_all_ranks(f"Qwen3VLModel: input_embeddings.shape = {input_embeddings.shape}.")
         output = self.language_model(
             input_ids=None,
             position_ids=position_ids,
@@ -551,9 +561,9 @@ def _load_state_dict_hook_ignore_extra_state(
     for name, keys in incompatible_keys._asdict().items():
         for key in keys[::-1]:
             if "extra_state" in key:
-                logging.getLogger(__name__).warning(
-                    f"_extra_state key {key} being removed from {name}"
-                )
+                # logging.getLogger(__name__).warning(
+                #     f"_extra_state key {key} being removed from {name}"
+                # )
                 keys.remove(key)
 
 

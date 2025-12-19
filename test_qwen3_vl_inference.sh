@@ -2,19 +2,25 @@
 # Qwen3-VL inference test script with image support
 # Supports both text-only and multimodal (image + text) inference
 
+export CUDA_VISIBLE_DEVICES=2,3
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+export HF_HOME=/nfs/hf_cache
 
-GPUS_PER_NODE=1
+export HF_MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
+export HF_MAPPING_FILE=/nfs/cyjiang/workdir/Megatron-LM/hf_checkpoint_mapping_qwen3vl.json
+
+GPUS_PER_NODE=2
 MASTER_ADDR=localhost
 MASTER_PORT=6001
 NUM_NODES=1
 
 # Model configuration (same as training script)
 TEXT_MODEL_ARGS=(
-    --decoder-num-layers 2
+    --decoder-num-layers 48
     --vocab-size 151936
     --hidden-size 2048
     --num-attention-heads 32
+    --kv-channels 128
     --num-query-groups 4
     --ffn-hidden-size 6144
     --max-position-embeddings 262144
@@ -38,7 +44,7 @@ TEXT_MODEL_ARGS=(
 
 # MoE configuration
 MOE_ARGS=(
-    --num-experts 16
+    --num-experts 128
     --moe-router-topk 8
     --moe-ffn-hidden-size 768
     --moe-grouped-gemm
@@ -47,7 +53,7 @@ MOE_ARGS=(
 
 # Vision model configuration
 VISION_MODEL_ARGS=(
-    --encoder-num-layers 2
+    --encoder-num-layers 27
     --img-h 1024
     --img-w 1024
     --patch-dim 16
@@ -56,9 +62,8 @@ VISION_MODEL_ARGS=(
 
 # Model parallelism
 MODEL_PARALLEL_ARGS=(
-    --tensor-model-parallel-size 1
+    --tensor-model-parallel-size 2
     --pipeline-model-parallel-size 1
-    --sequence-parallel
 )
 
 # Tokenizer and data
@@ -71,7 +76,7 @@ DATA_ARGS=(
 # For text-only inference, leave --image-paths empty
 # For multimodal inference, provide both --prompts and --image-paths
 INFERENCE_ARGS=(
-    --num-tokens-to-generate 256
+    --num-tokens-to-generate 8
     --inference-max-seq-length 131072
     --max-batch-size 1
     --temperature 1.0
@@ -96,16 +101,33 @@ OTHER_ARGS=(
 CHECKPOINT_PATH=${CHECKPOINT_PATH:-"./checkpoints/qwen3_vl_2layer_test"}
 
 echo "Starting Qwen3-VL inference with image support..."
-echo "Checkpoint: ${CHECKPOINT_PATH}"
+if [[ -n "${HF_MODEL_NAME}" ]]; then
+    echo "HF model: ${HF_MODEL_NAME} (mapping: ${HF_MAPPING_FILE:-default})"
+else
+    echo "Checkpoint: ${CHECKPOINT_PATH}"
+fi
 echo ""
 
-torchrun \
+BASE_CMD=(
+    torchrun \
     --nproc_per_node=$GPUS_PER_NODE \
     --nnodes=$NUM_NODES \
     --master_addr=$MASTER_ADDR \
-    --master_port=$MASTER_PORT \
-    qwen3_vl_inference.py \
-    --load ${CHECKPOINT_PATH} \
+        --master_port=$MASTER_PORT \
+        qwen3_vl_inference.py \
+)
+
+# Choose checkpoint source: HF or Megatron --load
+if [[ -n "${HF_MODEL_NAME}" ]]; then
+    BASE_CMD+=( --hf-model-name "${HF_MODEL_NAME}" )
+    if [[ -n "${HF_MAPPING_FILE}" ]]; then
+        BASE_CMD+=( --hf-mapping-file "${HF_MAPPING_FILE}" )
+    fi
+else
+    BASE_CMD+=( --load "${CHECKPOINT_PATH}" )
+fi
+
+BASE_CMD+=(
     "${TEXT_MODEL_ARGS[@]}" \
     "${MOE_ARGS[@]}" \
     "${VISION_MODEL_ARGS[@]}" \
@@ -113,3 +135,6 @@ torchrun \
     "${DATA_ARGS[@]}" \
     "${INFERENCE_ARGS[@]}" \
     "${OTHER_ARGS[@]}"
+)
+
+"${BASE_CMD[@]}"

@@ -1092,7 +1092,7 @@ def load_checkpoint_from_hf(model, hf_model_name, mapping_file, strict=True):
     import json
     import re
     try:
-        from transformers import AutoModel
+        from transformers import AutoModelForImageTextToText
     except ImportError:
         raise ImportError(
             "The 'transformers' package is required to load HuggingFace checkpoints. "
@@ -1113,7 +1113,7 @@ def load_checkpoint_from_hf(model, hf_model_name, mapping_file, strict=True):
     
     # Load HuggingFace model weights
     print_rank_0(f'Loading weights from HuggingFace model...')
-    hf_model = AutoModel.from_pretrained(hf_model_name)
+    hf_model = AutoModelForImageTextToText.from_pretrained(hf_model_name, dtype="auto", device_map="cpu")
     hf_state_dict = hf_model.state_dict()
     
     # Get Megatron model state dict
@@ -1207,7 +1207,7 @@ def load_checkpoint_from_hf(model, hf_model_name, mapping_file, strict=True):
                 mega_key = megatron_pattern.replace('{layer}', combo['layer']).replace('{expert}', combo['expert'])
                 if hf_key in hf_state_dict:
                     tensor = hf_state_dict[hf_key]
-                    expert_tensor = tensor[expert_idx:expert_idx+1].squeeze(0)
+                    expert_tensor = tensor[expert_idx:expert_idx+1].squeeze(0).t()
                     mapped_state_dict[mega_key] = expert_tensor
                 else:
                     if strict:

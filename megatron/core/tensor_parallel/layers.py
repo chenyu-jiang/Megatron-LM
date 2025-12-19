@@ -168,6 +168,44 @@ def _initialize_affine_weight_cpu(
     return None
 
 
+def _is_shape_matched(loaded_shape, expected_shape):
+    """Check if loaded tensor shape matches expected shape."""
+    return tuple(loaded_shape) == tuple(expected_shape)
+
+
+def _load_tensor_parallel_weight(
+    loaded_tensor,
+    partition_dim,
+    tensor_model_parallel_rank,
+    tensor_model_parallel_world_size,
+):
+    """Load weight from full checkpoint, extracting the shard for this rank.
+    
+    Args:
+        loaded_tensor: The full tensor loaded from checkpoint.
+        partition_dim: Dimension along which to partition (0 or 1).
+        tensor_model_parallel_rank: Rank of this TP rank.
+        tensor_model_parallel_world_size: Total number of TP ranks.
+        
+    Returns:
+        The extracted shard tensor that should be placed in state_dict.
+    """
+    # Calculate the shard size along the partition dimension
+    partition_size = loaded_tensor.shape[partition_dim]
+    shard_size = partition_size // tensor_model_parallel_world_size
+    
+    # Calculate offset for this rank
+    offset = tensor_model_parallel_rank * shard_size
+    
+    # Extract the shard using advanced indexing
+    indices = [slice(None)] * loaded_tensor.ndim
+    indices[partition_dim] = slice(offset, offset + shard_size)
+    shard = loaded_tensor[tuple(indices)]
+    
+    # Return the shard to be placed in state_dict
+    return shard
+
+
 class VocabParallelEmbedding(torch.nn.Module):
     """Embedding parallelized in the vocabulary dimension.
 
@@ -237,6 +275,70 @@ class VocabParallelEmbedding(torch.nn.Module):
             )
             if config.perform_initialization:
                 _initialize_affine_weight_gpu(self.weight, init_method, partition_dim=0, stride=1)
+        
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        VocabParallelEmbedding shards along dimension 0 (vocab dimension).
+        This hook extracts the appropriate shard from a full checkpoint if needed.
+        
+        Args:
+            state_dict: The state dictionary being loaded.
+            prefix: The prefix for parameter names.
+            local_metadata: Metadata for this module.
+            strict: Whether strict mode is enabled.
+            missing_keys: List to track missing keys (modified in-place).
+            unexpected_keys: List to track unexpected keys (modified in-place).
+            error_msgs: List to accumulate error messages (modified in-place).
+        """
+        weight_key = f'{prefix}weight'
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape
+            
+            # If shapes don't match, extract shard from full checkpoint
+            if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # The embedding_dim (dimension 1) should match
+                if loaded_weight.shape[1] == current_weight_shape[1]:
+                    # This is a full checkpoint, extract the vocab shard
+                    try:
+                        shard = _load_tensor_parallel_weight(
+                            loaded_tensor=loaded_weight,
+                            partition_dim=0,
+                            tensor_model_parallel_rank=get_tensor_model_parallel_rank(),
+                            tensor_model_parallel_world_size=self.tensor_model_parallel_size,
+                        )
+                        # Update state_dict with sharded weight
+                        state_dict[weight_key] = shard
+                    except Exception as e:
+                        error_msgs.append(
+                            f"Error sharding weight tensor for {weight_key}: {str(e)}"
+                        )
+                else:
+                    # Dimension mismatch - dimension 1 should match embedding_dim
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: "
+                            f"loaded shape {loaded_weight.shape} vs expected {current_weight_shape}. "
+                            f"Embedding dimension mismatch: "
+                            f"loaded {loaded_weight.shape[1]} vs expected {current_weight_shape[1]}"
+                        )
+        else:
+            # Weight key not found in state_dict - track as missing
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
 
     def forward(self, input_):
         """Forward.
@@ -869,6 +971,9 @@ class ColumnParallelLinear(torch.nn.Module):
                 f'{prefix}_extra_state'
             )
         )
+        
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
 
     def forward(
         self,
@@ -977,6 +1082,111 @@ class ColumnParallelLinear(torch.nn.Module):
         return make_sharded_tensors_for_checkpoint(
             state_dict, prefix, {'weight': 0, 'bias': 0}, sharded_offsets
         )
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        ColumnParallelLinear shards weights along dimension 0 (output dimension).
+        The weight tensor shape is (output_size_per_partition, input_size).
+        
+        This hook extracts the appropriate shard from a full checkpoint if needed.
+        
+        Args:
+            state_dict: The state dictionary being loaded.
+            prefix: The prefix for parameter names.
+            local_metadata: Metadata for this module.
+            strict: Whether strict mode is enabled.
+            missing_keys: List to track missing keys (modified in-place).
+            unexpected_keys: List to track unexpected keys (modified in-place).
+            error_msgs: List to accumulate error messages (modified in-place).
+        """
+        weight_key = f'{prefix}weight'
+        bias_key = f'{prefix}bias'
+        
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape if self.weight is not None else None
+            
+            if current_weight_shape and not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # Extract shard from full checkpoint
+                # ColumnParallelLinear shards along dimension 0 (output dimension)
+                if loaded_weight.shape[1] == current_weight_shape[1]:
+                    # Input dimension matches, extract output shard
+                    if self.weight is not None:
+                        try:
+                            shard = _load_tensor_parallel_weight(
+                                loaded_tensor=loaded_weight,
+                                partition_dim=0,
+                                tensor_model_parallel_rank=get_tensor_model_parallel_rank(),
+                                tensor_model_parallel_world_size=get_tensor_model_parallel_world_size(),
+                            )
+                            # Update state_dict with sharded weight
+                            state_dict[weight_key] = shard
+                        except Exception as e:
+                            error_msgs.append(
+                                f"Error sharding weight tensor for {weight_key}: {str(e)}"
+                            )
+                else:
+                    # Input dimension mismatch
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: "
+                            f"loaded shape {loaded_weight.shape} vs expected {current_weight_shape}. "
+                            f"Input dimension mismatch: "
+                            f"loaded {loaded_weight.shape[1]} vs expected {current_weight_shape[1]}"
+                        )
+        else:
+            # Weight key not found in state_dict - track as missing
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
+        
+        # Handle bias sharding along dimension 0
+        if bias_key in state_dict and self.bias is not None:
+            loaded_bias = state_dict[bias_key]
+            current_bias_shape = self.bias.shape
+            
+            if not _is_shape_matched(loaded_bias.shape, current_bias_shape):
+                # Extract shard from full checkpoint
+                # Bias is sharded along dimension 0 (same as weight)
+                if len(loaded_bias.shape) == 1:  # Bias is 1D
+                    try:
+                        # Create a temporary 2D tensor for slicing, then squeeze
+                        bias_2d = loaded_bias.unsqueeze(0)  # Shape: (1, output_size)
+                        shard_size = loaded_bias.shape[0] // get_tensor_model_parallel_world_size()
+                        offset = get_tensor_model_parallel_rank() * shard_size
+                        
+                        # Extract shard along dimension 1
+                        shard = bias_2d[:, offset:offset + shard_size].squeeze(0)
+                        
+                        with torch.no_grad():
+                            self.bias.data.copy_(shard)
+                        
+                        # Update state_dict with sharded bias
+                        state_dict[bias_key] = self.bias
+                    except Exception as e:
+                        error_msgs.append(
+                            f"Error sharding bias tensor for {bias_key}: {str(e)}"
+                        )
+                else:
+                    # Unexpected bias shape
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {bias_key}: "
+                            f"expected 1D tensor but got shape {loaded_bias.shape}"
+                        )
+        elif self.bias is not None and bias_key not in state_dict:
+            # Bias key not found in state_dict - track as missing only if bias exists
+            if bias_key not in missing_keys:
+                missing_keys.append(bias_key)
 
     def set_extra_state(self, state: Any):
         """Extra state is ignored"""
@@ -1143,6 +1353,9 @@ class RowParallelLinear(torch.nn.Module):
                 f'{prefix}_extra_state'
             )
         )
+        
+        # Register pre-hook to handle loading from full (non-sharded) checkpoints
+        self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
 
     def forward(self, input_):
         """Forward of RowParallelLinear
@@ -1207,6 +1420,73 @@ class RowParallelLinear(torch.nn.Module):
         return make_sharded_tensors_for_checkpoint(
             state_dict, prefix, {'weight': 1}, sharded_offsets
         )
+
+    def _load_state_dict_pre_hook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Pre-hook to handle loading from full (non-sharded) checkpoints.
+        
+        RowParallelLinear shards weights along dimension 1 (input dimension).
+        The weight tensor shape is (output_size, input_size_per_partition).
+        Bias is NOT sharded and remains the same across all TP ranks.
+        
+        This hook extracts the appropriate shard from a full checkpoint if needed.
+        
+        Args:
+            state_dict: The state dictionary being loaded.
+            prefix: The prefix for parameter names.
+            local_metadata: Metadata for this module.
+            strict: Whether strict mode is enabled.
+            missing_keys: List to track missing keys (modified in-place).
+            unexpected_keys: List to track unexpected keys (modified in-place).
+            error_msgs: List to accumulate error messages (modified in-place).
+        """
+        weight_key = f'{prefix}weight'
+
+        if weight_key in state_dict:
+            loaded_weight = state_dict[weight_key]
+            current_weight_shape = self.weight.shape
+            
+            if not _is_shape_matched(loaded_weight.shape, current_weight_shape):
+                # Extract shard from full checkpoint
+                # RowParallelLinear shards along dimension 1 (input dimension)
+                if loaded_weight.shape[0] == current_weight_shape[0]:
+                    # Output dimension matches, extract input shard
+                    try:
+                        shard = _load_tensor_parallel_weight(
+                            loaded_tensor=loaded_weight,
+                            partition_dim=1,
+                            tensor_model_parallel_rank=get_tensor_model_parallel_rank(),
+                            tensor_model_parallel_world_size=get_tensor_model_parallel_world_size(),
+                        )
+                        # Update state_dict with sharded weight
+                        state_dict[weight_key] = shard
+                    except Exception as e:
+                        error_msgs.append(
+                            f"Error sharding weight tensor for {weight_key}: {str(e)}"
+                        )
+                else:
+                    # Output dimension mismatch
+                    if strict:
+                        error_msgs.append(
+                            f"Shape mismatch for {weight_key}: "
+                            f"loaded shape {loaded_weight.shape} vs expected {current_weight_shape}. "
+                            f"Output dimension mismatch: "
+                            f"loaded {loaded_weight.shape[0]} vs expected {current_weight_shape[0]}"
+                        )
+        else:
+            # Weight key not found in state_dict - track as missing
+            if weight_key not in missing_keys:
+                missing_keys.append(weight_key)
+        
+        # Bias is NOT sharded in RowParallelLinear, so we don't need to handle it specially
 
     def set_extra_state(self, state: Any):
         """Extra state is ignored"""

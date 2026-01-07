@@ -1,0 +1,9 @@
+export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export HF_HOME=/nfs/hf_cache
+
+export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0
+export NCCL_ALGO=Ring
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
+python3 qwen3_vl_inference_hf.py

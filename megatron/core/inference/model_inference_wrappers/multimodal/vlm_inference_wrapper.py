@@ -214,6 +214,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
         self,
         prompts_tokens: torch.Tensor,
         images: torch.Tensor,
+        image_grid_thw: torch.Tensor,
     ):
         """Prepares the inference input data.
 
@@ -238,6 +239,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
         )
 
         inference_input["images"] = images
+        inference_input["image_grid_thw"] = image_grid_thw
 
         return inference_input
 
@@ -262,6 +264,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
         tokens = inference_input["tokens"]
         position_ids = inference_input["position_ids"]
         images = inference_input["images"]
+        image_grid_thw = inference_input["image_grid_thw"]
 
         tokens2use = tokens[:, context_start_position:context_end_position]
         positions2use = position_ids[:, context_start_position:context_end_position]
@@ -270,6 +273,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
             "tokens": tokens2use,
             "position_ids": positions2use,
             "images": images,
+            "image_grid_thw": image_grid_thw,
         }
 
     def run_one_forward_step(self, inference_input: Dict[str, Any]) -> torch.Tensor:
@@ -320,6 +324,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
         images = inference_input["images"]
         tokens = inference_input["tokens"]
         position_ids = inference_input["position_ids"]
+        image_grid_thw = inference_input["image_grid_thw"]
 
         output = self.model(
             images,
@@ -328,6 +333,7 @@ class Qwen3VLInferenceWrapper(VLMInferenceWrapper):
             attention_mask=None,
             inference_params=self.inference_params,
             runtime_gather_output=True,
+            image_grid_thw=image_grid_thw
         )
         if isinstance(output, tuple):
             logits, _ = output

@@ -448,7 +448,27 @@ class Qwen3VLModel(MegatronModule):
         # if they were computed already earlier for this sample.
         deepstack_image_embeds = None
         if use_inference_kv_cache:
-            if self.add_encoder:
+            if self.add_encoder and not inference_params.decode_mode:
+                input_embeddings = self.language_model.embedding(input_ids, None)
+                from megatron.training import get_args
+                if get_args().rank == 0:
+                    torch.save((images, image_grid_thw), f"/nfs/cyjiang/debug/mlm_image_input.pt")
+                image_embeddings, deepstack_image_embeds = self.get_image_features(
+                    images, image_grid_thw=image_grid_thw
+                )
+                image_embeddings = torch.cat(image_embeddings, dim=0).to(images.device, images.dtype)
+                if get_args().rank == 0:
+                    torch.save((image_embeddings, deepstack_image_embeds), f"/nfs/cyjiang/debug/mlm_image_features.pt")
+                torch.distributed.barrier()
+                exit(0)
+
+                image_mask = self.get_placeholder_mask(
+                    input_ids, inputs_embeds=input_embeddings, image_features=image_embeddings
+                )
+                input_embeddings = input_embeddings.masked_scatter(image_mask, image_embeddings)
+
+                image_mask = image_mask[..., 0]
+            elif self.add_decoder and inference_params.decode_mode:
                 input_embeddings = self.language_model.embedding(input_ids, None)
                 image_mask = self.get_placeholder_mask(
                     input_ids, inputs_embeds=input_embeddings, image_features=None

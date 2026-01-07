@@ -9,6 +9,10 @@ export HF_HOME=/nfs/hf_cache
 export HF_MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
 export HF_MAPPING_FILE=/nfs/cyjiang/workdir/Megatron-LM/hf_checkpoint_mapping_qwen3vl.json
 
+export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0
+export NCCL_ALGO=Ring
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
 GPUS_PER_NODE=2
 MASTER_ADDR=localhost
 MASTER_PORT=6001
@@ -80,6 +84,7 @@ INFERENCE_ARGS=(
     --inference-max-seq-length 131072
     --max-batch-size 1
     --temperature 1.0
+    --deterministic-mode
     --top-k 1
     --top-p 0.0
     --prompts "What is this image about?"

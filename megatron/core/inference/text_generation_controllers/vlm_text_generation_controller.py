@@ -66,6 +66,7 @@ class Qwen3VLTextGenerationController(TextGenerationController):
         return self.inference_wrapped_model.prep_inference_input(
             prompts_tokens,
             request.imgs,
+            request.image_grid_thw,
         )
 
     def pad_input_prompt_tokens(

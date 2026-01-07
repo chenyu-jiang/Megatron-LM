@@ -243,7 +243,7 @@ def create_prompt_with_image_token(prompt: str) -> str:
     This matches the format used in MockQwen3VLFinetuningDataset.
     """
     # Format: <|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>
-    return f"<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|><|im_start|>assistant\n"
+    return f"<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n<|im_start|>assistant\n"
 
 
 def is_first_rank():
@@ -368,6 +368,7 @@ def main():
                 
                 # Get the processed outputs
                 imgs = processed.get("pixel_values")
+                image_grid_thw = processed.get("image_grid_thw")
             else:
                 # Text-only inference
                 prompt = create_text_only_prompt(prompt)
@@ -381,6 +382,7 @@ def main():
                         processed[key] = processed[key].to("cuda")
                 
                 imgs = None
+                image_grid_thw = None
             
             # Create Qwen3VL inference request with properly processed inputs
             request = Qwen3VLInferenceRequest(
@@ -389,6 +391,7 @@ def main():
                 prompt_tokens=processed.get("input_ids").flatten().tolist(),
                 inference_parameters=sampling_params,
                 imgs=imgs,
+                image_grid_thw=image_grid_thw,
             )
             # print_all_ranks(f"Prompt {idx}: created inference request, sending to engine.")
 

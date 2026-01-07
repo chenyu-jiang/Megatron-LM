@@ -56,3 +56,4 @@ class VLMInferenceRequest(InferenceRequest):
 class Qwen3VLInferenceRequest(InferenceRequest):
     """Class for a Qwen3VL inference request"""
     imgs: torch.Tensor
+    image_grid_thw: torch.Tensor
